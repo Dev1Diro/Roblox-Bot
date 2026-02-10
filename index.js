@@ -1,47 +1,80 @@
 import express from "express";
 import fetch from "node-fetch";
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from "discord.js";
+import {
+  Client,
+  GatewayIntentBits,
+  REST,
+  Routes
+} from "discord.js";
 
 const app = express();
 app.use(express.json());
 
-/* ===== 환경변수 ===== */
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID;
-const ROBLOX_ENDPOINT = process.env.ROBLOX_ENDPOINT; 
-const ROBLOX_SECRET = process.env.ROBLOX_SECRET;
-const LOG_CHANNEL = process.env.LOG_CHANNEL;
+/* ===== ENV ===== */
+const {
+  DISCORD_TOKEN,
+  CLIENT_ID,
+  GUILD_ID,
+  ROBLOX_ENDPOINT,
+  ROBLOX_SECRET,
+  LOG_CHANNEL
+} = process.env;
 
-/* ===== 디스코드 클라이언트 ===== */
+/* ===== DISCORD ===== */
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
 
-/* ===== 슬래시 명령 등록 ===== */
+/* ===== SLASH COMMANDS (안전 JSON 직접 작성) ===== */
 const commands = [
-  new SlashCommandBuilder()
-    .setName("ban")
-    .setDescription("로블록스 유저 영구밴")
-    .addStringOption(o =>
-      o.setName("userid").setDescription("UserId").setRequired(true))
-    .addStringOption(o =>
-      o.setName("reason").setDescription("사유").setRequired(false)),
-    
-  new SlashCommandBuilder()
-    .setName("unban")
-    .setDescription("로블록스 유저 밴 해제")
-    .addStringOption(o =>
-      o.setName("userid").setDescription("UserId").setRequired(true))
-].map(c => c.toJSON());
+  {
+    name: "ban",
+    description: "ban roblox user",
+    options: [
+      {
+        name: "userid",
+        description: "roblox userid",
+        type: 3,
+        required: true
+      },
+      {
+        name: "reason",
+        description: "ban reason",
+        type: 3,
+        required: false
+      }
+    ]
+  },
+  {
+    name: "unban",
+    description: "unban roblox user",
+    options: [
+      {
+        name: "userid",
+        description: "roblox userid",
+        type: 3,
+        required: true
+      }
+    ]
+  }
+];
 
-const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
-await rest.put(
-  Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-  { body: commands }
-);
+/* ===== REGISTER COMMANDS (한 번만 실행) ===== */
+async function registerCommands() {
+  try {
+    const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
+    await rest.put(
+      Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
+      { body: commands }
+    );
+    console.log("Slash commands registered");
+  } catch (e) {
+    console.error("Slash register error:", e);
+  }
+}
+registerCommands();
 
-/* ===== 슬래시 명령 처리 ===== */
+/* ===== INTERACTIONS ===== */
 client.on("interactionCreate", async i => {
   if (!i.isChatInputCommand()) return;
 
@@ -49,28 +82,19 @@ client.on("interactionCreate", async i => {
     const userId = i.options.getString("userid");
     const reason = i.options.getString("reason") || "No reason";
 
-    await sendToRoblox({
-      action: "ban",
-      userId,
-      reason
-    });
-
-    await i.reply(`✅ **BAN 완료**\nUserId: ${userId}\n사유: ${reason}`);
+    await sendToRoblox({ action: "ban", userId, reason });
+    await i.reply(`BAN 완료: ${userId}`);
   }
 
   if (i.commandName === "unban") {
     const userId = i.options.getString("userid");
 
-    await sendToRoblox({
-      action: "unban",
-      userId
-    });
-
-    await i.reply(`♻️ **UNBAN 완료**\nUserId: ${userId}`);
+    await sendToRoblox({ action: "unban", userId });
+    await i.reply(`UNBAN 완료: ${userId}`);
   }
 });
 
-/* ===== Roblox로 명령 전달 ===== */
+/* ===== SEND TO ROBLOX ===== */
 async function sendToRoblox(data) {
   await fetch(ROBLOX_ENDPOINT, {
     method: "POST",
@@ -82,19 +106,17 @@ async function sendToRoblox(data) {
   });
 }
 
-/* ===== Roblox → Render 로그 수신 ===== */
+/* ===== ROBLOX → DISCORD LOG ===== */
 app.post("/log", async (req, res) => {
-  const log = req.body;
-
-  const channel = await client.channels.fetch(LOG_CHANNEL);
-  if (channel) {
-    channel.send("```json\n" + JSON.stringify(log, null, 2) + "\n```");
-  }
-
+  try {
+    const channel = await client.channels.fetch(LOG_CHANNEL);
+    if (channel) {
+      channel.send("```json\n" + JSON.stringify(req.body, null, 2) + "\n```");
+    }
+  } catch {}
   res.send("OK");
 });
 
-/* ===== 서버 ===== */
+/* ===== SERVER ===== */
 app.listen(3000, () => console.log("Render server running"));
-
 client.login(DISCORD_TOKEN);
