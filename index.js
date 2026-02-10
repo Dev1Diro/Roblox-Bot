@@ -1,6 +1,6 @@
-// Render server (Node.js) — ANTICHEAT_EXCLUDE 전송 포함
 import express from "express";
-import fetch from "node-fetch";
+import fs from "fs";
+import bans from "./bans.js";
 import { Client, GatewayIntentBits, REST, Routes } from "discord.js";
 
 const app = express();
@@ -10,20 +10,32 @@ const {
   DISCORD_TOKEN,
   CLIENT_ID,
   GUILD_ID,
-  ROBLOX_ENDPOINT,
   ROBLOX_SECRET,
   LOG_CHANNEL,
-  ANTICHEAT_EXCLUDE = "",
   PORT = 3000
 } = process.env;
 
-if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !ROBLOX_ENDPOINT || !ROBLOX_SECRET || !LOG_CHANNEL) {
-  console.error("Missing required environment variables. Exiting.");
-  process.exit(1);
-}
-
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+// bans.js 업데이트 함수
+function saveBans() {
+  fs.writeFileSync("./bans.js", "module.exports = " + JSON.stringify(bans, null, 2));
+}
+
+function addBan(userId, reason, source) {
+  bans.push({ userId, reason, source, time: Date.now() });
+  saveBans();
+}
+
+function removeBan(userId) {
+  const idx = bans.findIndex(b => b.userId == userId);
+  if (idx !== -1) {
+    bans.splice(idx, 1);
+    saveBans();
+  }
+}
+
+// Discord Slash 명령어 등록
 const commands = [
   {
     name: "ban",
@@ -43,87 +55,45 @@ const commands = [
 ];
 
 async function registerCommands() {
-  try {
-    const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
-    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-    console.log("Slash commands registered");
-  } catch (e) {
-    console.error("Slash register error:", e);
-  }
+  const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
+  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
 }
 registerCommands();
 
-const MAX_RETRIES = 2;
-async function postWithRetry(url, opts, retries = 0) {
-  try {
-    const res = await fetch(url, opts);
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status}: ${text}`);
-    }
-    return res;
-  } catch (err) {
-    if (retries < MAX_RETRIES) {
-      await new Promise(r => setTimeout(r, 200 * (retries + 1)));
-      return postWithRetry(url, opts, retries + 1);
-    }
-    throw err;
-  }
-}
-
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
-  try {
-    if (interaction.commandName === "ban") {
-      const userId = interaction.options.getString("userid");
-      const reason = interaction.options.getString("reason") || "No reason";
-      await sendToRoblox({ action: "ban", userId, reason });
-      await interaction.reply({ content: `BAN 완료: ${userId}`, ephemeral: true });
-    } else if (interaction.commandName === "unban") {
-      const userId = interaction.options.getString("userid");
-      await sendToRoblox({ action: "unban", userId });
-      await interaction.reply({ content: `UNBAN 완료: ${userId}`, ephemeral: true });
-    }
-  } catch (err) {
-    console.error("Interaction error:", err);
-    try { await interaction.reply({ content: "오류가 발생했습니다.", ephemeral: true }); } catch {}
+  if (interaction.commandName === "ban") {
+    const userId = interaction.options.getString("userid");
+    const reason = interaction.options.getString("reason") || "No reason";
+    addBan(userId, reason, "Discord");
+    await interaction.reply({ content: `BAN 기록됨: ${userId}`, ephemeral: true });
+  } else if (interaction.commandName === "unban") {
+    const userId = interaction.options.getString("userid");
+    removeBan(userId);
+    await interaction.reply({ content: `UNBAN 기록됨: ${userId}`, ephemeral: true });
   }
 });
 
-async function sendToRoblox(data) {
-  if (!data || typeof data !== "object") throw new Error("Invalid payload");
-  const body = JSON.stringify(data);
-  await postWithRetry(ROBLOX_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Roblox-Secret": ROBLOX_SECRET,
-      "Exclude-Ids": ANTICHEAT_EXCLUDE
-    },
-    body
-  });
-}
-
-app.post("/log", async (req, res) => {
-  try {
-    const payload = req.body;
-    if (!payload || typeof payload !== "object") return res.status(400).send("Bad Request");
-    const channel = await client.channels.fetch(LOG_CHANNEL).catch(() => null);
-    if (channel && channel.isTextBased && channel.send) {
-      const text = "```json\n" + JSON.stringify(payload, null, 2) + "\n```";
-      await channel.send({ content: text }).catch(err => console.error("Send log error:", err));
-    }
-    res.status(200).send("OK");
-  } catch (err) {
-    console.error("Log endpoint error:", err);
-    res.status(500).send("ERR");
+// Roblox 서버에서 ban 여부 확인
+app.post("/checkban", (req, res) => {
+  const { userId } = req.body;
+  const found = bans.find(b => b.userId == userId);
+  if (found) {
+    res.json({ banned: true, reason: found.reason });
+  } else {
+    res.json({ banned: false });
   }
 });
 
-app.get("/health", (req, res) => res.send({ ok: true, ts: Date.now() }));
+// Roblox 서버에서 채팅 로그 전송 → Discord 채널에 출력
+app.post("/chatlog", async (req, res) => {
+  const { userId, name, message } = req.body;
+  const channel = await client.channels.fetch(LOG_CHANNEL).catch(() => null);
+  if (channel && channel.isTextBased()) {
+    await channel.send(`[CHAT] ${name} (${userId}): ${message}`);
+  }
+  res.send("OK");
+});
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-client.login(DISCORD_TOKEN).catch(err => {
-  console.error("Discord login failed:", err);
-  process.exit(1);
-});
+client.login(DISCORD_TOKEN);

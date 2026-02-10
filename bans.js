@@ -1,0 +1,2 @@
+// bans.js
+module.exports = [];
