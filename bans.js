@@ -1,2 +1,2 @@
 // bans.js
-module.exports = [];
+export default [];
